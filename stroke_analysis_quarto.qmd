@@ -1,0 +1,1184 @@
+---
+title: "Stroke Prediction and Analysis"
+authors: "Cristian Brugnara and Matteo Del Grande"
+date: "2024-06-18"
+format: 
+  html:
+    smooth-scroll: true
+    code-fold: true
+    code-line-numbers: true
+    embed-resources: true
+    toc: true
+    theme:
+      light: default
+      dark: darkly
+---
+
+<!-- Thanks to some of our colleagues for the QMD headers -->
+
+
+## Background
+
+Our data science team received the following message from **Health&co**, a medical research institute, asking for assistance with some analysis.
+
+"We are a medical research institute that collaborates with many hospitals across Switzerland. Recently, one of our partner hospitals provided us with a dataset containing information on patients who have suffered from **brain strokes**. Our initial task was to analyze this data to identify typical profiles and risk factors associated with strokes.
+
+Recognizing the importance of comparative analysis, we requested additional data from the hospital, specifically focusing on patients who have not experienced any stroke. This expanded dataset allows us to perform more comprehensive analyses and draw more robust conclusions.
+
+During our discussions, we identified several paths for further exploration within the data. Realizing the complexity and potential of these analyses, we decided to seek the expertise of data scientists. The use of machine learning techniques could discover hidden patterns and provide valuable insights into stroke prevention. Moreover, these analyses could help evaluate the effectiveness of various medical tools and interventions.
+
+Therefore, we are reaching out to you with a series of questions and potential analysis topics, hoping to enhance our research. Possible Questions and Analysis Topics
+
+-   **Prediction of Strokes** with Supervised Learning models: Our primary objective is to predict whether a patient may experience a stroke using machine learning or statistical methods. We would also like to know whether complex models are necessary for this goal, or if reliable predictions can be achieved with more explainable methods. Patients often don't care about or are averse to medical results if they don't know why those were taken. It's normal behavior; people want and should know everything about a decision taken regarding their bodies.
+
+-   **Feature importance analysis**: To eventually improve the efficiency and accuracy of our models, we are interested in exploring simple dimensionality reduction techniques such as feature selection. Thus we are interest in a deep analysis about feature importance for the predictions. It's important to define which are the most important features, which are less relevant and which convey information already brought by other features.
+
+-   **Risk Classification**: Understanding the risk profile of patients is crucial. We aim to classify patients into different risk categories for strokes using multi-class classification. We acknowledge that defining these risk groups might require expert domain knowledge, and clustering techniques could be explored as an alternative.
+
+-   **Significance Testing**: Through our initial analysis, if variables such as age, BMI, or glucose levels are found to be relevant to stroke occurrence, we want to determine if there is a significant difference in the average values of these variables between stroke patients and non-stroke patients. This would help confirm their relevance and guide targeted interventions.
+
+-   **BMI Analysis**: We suspect that lifestyle factors might play a role in stroke risk. Thus we would like to start a campaign, called "Live Better, Your Brain Is Going To Thank You!" to promote healthy lifestyles among people. Therefore, analyzing whether the average BMI varies significantly across different work types or residence types can provide insights into lifestyle-related risk factors. Of course, to develop our campaign we will analyse many factors, especially those that can be changed relatively easily, however this would be a nice starting point.
+
+We hope that you will consider the proposed and questions, but also experiments with you ideas."
+
+**Analysis and Discussion on the proposed questions**
+
+Before starting to work on the dataset, we'll share our opinions on them, the first considerations about each question and what is the general approach we may follow.
+
+-   Stroke prediction: This is quite straightforwards as it's a standard **binary classification task**. The main point of interest is that in the healthcare sector, the models should have an high degree of **explainability**. There are various approaches to reach explainable AI, the most common being the use of models that are explainable in nature (such as linear models) and the use of tools that try to explain decisions of more complex models (LIME, Shapley values, GradCam...). We will try the first approach, by creating a simple model we'll be able to determine the complexity of the prediction task, and by testing a more convoluted model we can decide the second approach might be a better choice. While we will explain our choices later, we can already tell that accuracy may very well not be the best metric for this classification task. Although it would be acceptable if the data were to be balanced, a False Negative (FN) point is probably way more impactful than a False Positive (FP) one; indeed if a patient was to be classified as healthy but then had a stroke would be more problematic than the hypothtical resource loss of the opposite case happening.
+
+-   Feature importance: Our models are already able to give scores about feature importance (from linear regression coefficients and Z-Scores to tree-based models entropy gain), thus we have an interesting starting point to determine which feature explain our target the most. If we notice that some features are several magnitues more important than others, we could try to determine how much them is explained by the others.
+
+-   Risk classification: At this stage of the project we are supposed to do analysis isolated by the medical perspective of our collaborators, thus the making of **hand-crafted groups** may be complex as none of us is a medical expert. We could try a clustering approach but there are a few issues. Defining the number of clusters isn't straightforward and may impact the whole process, it also present scalability issues as it may hard to cluster a lot of patients into a small numbers of clusters. Waiting for a deeper look into the matter we might divide the patients into groups **based on our model probability scores**. Although this approach is quite frail, it is coherent with our analysis and can still uncover interesting patterns.
+
+```{=html}
+<!-- -->
+```
+-   Significance Testing: It doesn't seem like a big issue. We can perform a simple **hypothesis testing** for the mean of a particular feature, analyzing the difference between patients who had and didn't have strokes. We'll decide whether to use a paired or non-paired test after understanding the dataset and the uniqueness of the patients. We'll have to check the normality of the data before choosing between a t-test or a Wilcoxon Signed-Rank test
+
+-   BMI analysis: To compare differences between the distributions of various groups we can use **ANOVA**, this seems feasible, we could do a first analysis on the work types, then the residence types, lastly on their combinations.
+
+## Data preparation and analysis
+
+We first load the required libraries from CRAN.
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+# loading useful libraries
+library(rlang)  #  pass string feature names to functions
+library(infer)
+library(themis)
+library(performance) # check if models are valid
+library(tidyverse)
+library(glue)  # f-strings
+library(tidymodels)
+library(caret)  # stratified split
+library(corrr)   # corr matrix
+library(reshape2) # heatmap of corr matrix
+
+
+set.seed(999)
+```
+
+We now load the dataset using readr.
+
+```{r}
+data <- read_csv("./healthcare-dataset-stroke-data.csv", show_col_types =FALSE)
+dim(data); colnames(data)
+```
+
+Let us explain what each column represent.
+
+-   id: The numerical identifier of the patient. gender: Whether the patient is Male, Female or Other.
+
+-   age: The age (in years) of the patient.
+
+-   hypertension: Whether the patient has hypertension ie. when the pressure in the blood vessels is too high.
+
+-   Heart disease: Whether the patient currently has any heart-related diseases.
+
+-   Ever married: Whether the patient is or has ever been married.
+
+-   Work_type: The working group the patient is affiliated two. Includes 'children' and 'Never_worked'.
+
+-   Residence_type: Rural or Urban.
+
+-   avg_glucose_level: average glucose level in blood.
+
+-   bmi: body mass index. Weight / Height\^2
+
+-   smoking_status: Groups that represent the relationship between the patient and smoking.
+
+-   stroke: Binary target. Whether the patient experienced or not a stroke.
+
+The next step is to check whether tha **dataset is tidy**.
+
+We have over 5100 patients and 12 columns, with 'stroke' being the binary target of the prediction task. From the feature names and the first few lines we can confirm that each column represents a characteristic of the patient and no cell contains more than one values that could be split.
+
+```{r}
+head(data, 5)
+```
+
+The last check needed for a tidy dataset is that each row is a different observation, or in our case a patient. To do so we make sure that all of the people are different by counting their IDs. We can see that it's indeed the case.
+
+```{r}
+glue("Number of unique IDs  {length(unique(data$id))}"); glue("Number of observations in the dataset: {dim(data)[[1]]}")
+```
+
+From this point on, ID is not relevant anymore as completely unique values have no predictive power and aren't useful for any analysis, we will remove them, as it also assures an higher degree of privacy.
+
+```{r}
+data <- select(data, -id)
+```
+
+Often data collection may produce mistakes or incomplete observations. Missing data is one of the biggest problems for machine learning models. Many of them can't handle it by themselves. Let's check the missing values of our dataset for each column.
+
+```{r}
+sapply(data, function(x) sum(x == "N/A"))
+```
+
+The only column that contains NaN values is 'bmi' and we can notice that we don't have any height or weight columns, thus it can't be extracted from the other columns. There are many ways to impute this values, such as mean/median imputation/sampling or even regression from other features. However, 201 values are relatively few compared to the rest, so we will remove those rows.
+
+```{r}
+data <- data[!apply(data == "N/A", 1, any), ]
+
+sapply(data, function(x) sum(x == "N/A"))
+
+data$bmi <- as.numeric(data$bmi)
+```
+
+Before starting to visualize and analyze we should divide the dataset into train + validation and test sets. The test set is supposed to simulate **fully unknown data** and won't be used until the end of the process. The training set is used to train models, and the validation set is used to evaluate models inside of the workflow and to tune their hyperparameters without leaking the test data. We believe visualizing should also be done only on the train set, otherwise we might notice some patterns that we weren't supposed to be seen, since they could have come from unknown data.
+
+We use a **stratified split** from caret to keep the ratio of patients that had and didn't have a stroke in all datasets the same. This is important since we have few patients that had a stroke and they could all end up in one side after the split. We'll discuss class imbalance more later.
+
+```{r}
+data$stroke <- as.factor(data$stroke)
+
+train.index <- createDataPartition(data$stroke, p = 0.75, list = FALSE)
+tmp_train <- data[ train.index,]
+tb_test  <- data[-train.index,]
+
+train_2.index <- createDataPartition(tmp_train$stroke, p = 0.75, list = FALSE)
+tb_val  <- tmp_train[-train_2.index,]
+tb_train <- tmp_train[ train_2.index,]
+
+print(glue("Train set shape: ({dim(tb_train)[[1]]}, {dim(tb_train)[[2]]})"))
+print(glue("Validation set shape: ({dim(tb_val)[[1]]}, {dim(tb_val)[[2]]})"))
+print(glue("Test set shape: ({dim(tb_test)[[1]]}, {dim(tb_test)[[2]]})"))
+```
+
+**Data exploration**
+
+We can start doing some data exploration. Let's start by understanding the numeric variables: we don't have many of them in this dataset as most of the columns are either categorical, often binary. The available columns are the age, the bmi and the average glucose level.
+
+```{r}
+numeric_columns <- c('age','avg_glucose_level','bmi')
+
+print(summary(select(tb_train, all_of(numeric_columns))))
+```
+
+Some notable details are: the mean of *avg_glucose_level* is significantly higher than its median, indicating right-skewness, many outliers may be pulling the mean to the right. The age column seems to have a wide range, this is good because it means we have a diverse set of patients.
+
+We plot their PDFs to understand their distributions.
+
+```{r}
+for (col in numeric_columns) {
+  p <- ggplot(tb_train, aes(x = !!sym(col))) +
+    geom_histogram(bins = 30, fill = "blue", color = "black") +
+    labs(title = glue("distribution of '{col}'"), x = col, y = "Frequency") +
+    theme_minimal()
+  print(p)
+}
+```
+
+The distribution of age confirms that our dataset is quite varied with many patients coming from all age ranges. Although there are a few peaks around the mean, it isn't really a normal distribution.
+
+BMI on the other hand shows a well-defined bell shape centered around 29, it is slightly right-skewed and some outliers can be noticed. Since those points are very few compared to the remaining patients, an idea would be to remove or cap them to help the models, however when dealing with patients we need to be careful considering them anomalies, we could lose important information about diseases and people behaviors. In general, if an outlier is not a clear error (due to data collection) we are skeptical about removing it.
+
+The distribution of the glucose level is the most interesting one as we can notice a separation between values before 175\~ and after, it looks like two normal distributions put together as the points far from the 'first bell' are quite a lot.
+
+```{r}
+for (col in numeric_columns) {
+  p <- ggplot(tb_train, aes(x = factor(0), y = !!sym(col))) +
+    geom_boxplot() +
+    labs(title=glue('boxplot of {col}'),y = col, x = "") +
+    theme_minimal()
+  print(p)
+}
+```
+
+Box-plots are very useful to notice outliers and are simple to make. As we discussed before, age is widely distributed and no point can be really considered an outlier. The other two show many outliers on the upper(right) side of the distribution, but since we already talked about them, and removing them when dealing with real patients may not always be a great idea, we'll keep them in. The last two plots also show a relatively small variance, it can be noticed from the size of the box.
+
+We can now add an additional dimension to the plots in order to check the distributions compared to our target *stroke*. This is useful to notice significant differences in the distributions between our different targets.
+
+```{r}
+for (col in numeric_columns) {
+  p <- ggplot(tb_train, aes(x = factor(stroke), y = !!sym(col), fill = factor(stroke))) +
+    geom_boxplot() +
+    labs(title = glue("Box plot of {col} stratified by stroke"), y = col, x = "Stroke (0 = False, 1 = True)") +
+    theme_minimal() +
+    theme(legend.position = "none")
+  print(p)
+}
+```
+
+The boxes of BMI are almost overlapping, this probably means that the feature isn't the most relevant for the prediction, and the presence of more outliers on the left side is due to more people belonging to that group.
+
+The other two are more interesting. As expected, strokes seem to be the most prevalent on older people, the vast majority of the distribution is entirely above the one of 'healthy' people, and it's in the range 60-80. This is clearly a very important feature, although we can't give a definite answer right now.
+
+The glucose level plot shows that the majority of people who didn't have a stroke is contained in a subset (75-120) of the distribution of the ones who did. This signals that glucose may not be the most important factor, but higher levels of it may affect the likelihood of having a stroke.
+
+In general we see relevant differences between the two groups, the intuition is that we could be able to predict the target quite well.
+
+```{r}
+ggplot(tb_train, aes(x = age, y = avg_glucose_level)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "age vs avg_glucose_level", x = "age", y = "avg_glucose_level") +
+  theme_minimal()
+```
+
+There seem to exist slight positive correlation between age and the glucose level. This is a general trend as there isn't really a 1 to 1 correlation. As people age, their metabolism tends to become slower; it can affect how the body processes glucose. This can lead to higher average glucose levels in older adults.
+
+```{r}
+ggplot(tb_train, aes(x = age, y = bmi)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "age vs bmi", x = "age", y = "bmi") +
+  theme_minimal()
+```
+
+Although there is a similar trend line, the shape is quite different. It seems that adults have higher BMI levels compared to children, but also to elders. The last part could be explained by old people losing muscle mass due to reasons such as health diseases and lack of physical activity. We will analyse the BMI in some of the following sections.
+
+We now want to check the correlation between numeric variables, and also our target stroke, to do so we will create a temporary variable *stroke\_* which is the numerical version of the target.
+
+```{r}
+tb_train$stroke_ <- as.numeric(tb_train$stroke)
+
+tb_corr <- tb_train %>% correlate()
+tb_corr
+```
+
+```{r}
+melted <- tb_corr %>% melt(varnames = c("x", "y"))
+
+melted$term <- factor(melted$term, levels = tb_corr$term)
+melted$variable <- factor(melted$variable, levels = tb_corr$term)
+```
+
+```{r}
+melted %>% ggplot() + geom_tile(aes(x=variable, y=term, fill=value)) + xlab('') +ylab('') + geom_text(aes(x=variable, y=term, label=round(value, 2)), size = 3) +
+  scale_fill_gradient2(low="lightblue", high = "blue", mid = "white", 
+                       midpoint = 0, limit = c(-1, 1), name = "correlation value") + theme(axis.text.x = element_text(angle = 20, hjust=1)) + labs(title = "Correlation Matrix")
+```
+
+The variable which is the most correlated with all the rest is age, it makes sense as time is one of the factors that affect the body the most. It also seem to have the highest relation with the target.
+
+The rest of the values are lower and none of them is particularly interesting. A correlation matrix like this is a good sign since there doesn't seem to be a lot of collinearity between variables (except age, more on that below).
+
+Hypertension, heart_disease and avg_glucose_level seem decently correlated to the strokes, but not very much, we'll deepen our analysis later.
+
+```{r}
+tb_train <- select(tb_train, -stroke_)
+```
+
+Now let's focus on the categorical variables. First we show the counts of each group in all categories.
+
+```{r}
+print(table(tb_train$gender))
+cat("\n\n")
+print(table(tb_train$work_type))
+cat("\n\n")
+print(table(tb_train$smoking_status))
+cat("\n\n")
+print(table(tb_train$Residence_type))
+```
+
+While the value counts of the groups is very helpful, it is more impactful to look at visualizations, which are much more understood by humans.
+
+For the categorical but not binary variables we show a pie-chart which intuitively highlights the distribution.
+
+```{r}
+work_counts <- tb_train %>%
+  group_by(work_type) %>%
+  summarise(count = n())
+
+ggplot(work_counts, aes(x = "", y = count, fill = work_type)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  labs(title = "Distribution of work_Type", fill = "Work Type")
+
+
+smoke_counts <- tb_train %>%
+  group_by(smoking_status) %>%
+  summarise(count = n())
+
+ggplot(smoke_counts, aes(x = "", y = count, fill = smoking_status)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  labs(title = "Distribution of smoking_status", fill = "status")
+```
+
+It's interesting to note that a sizable chunk of the sample is formed by children. The large majority of patients are privates, however we don't believe this is going to be very relevant for the predictions.
+
+The smoking status is instead directly related to health, we can see that the patients are evenly distributed between three groups: smokers (formerly smoked - smokes), non-smokers and unknown, it's unfortunate that this latter group is as big as it is since we could have had much more information.
+
+Next the binary variables, the target is included here. NOTE: Gender is not binary, there is a single sample in the 'Other' category, however it isn't plotted as a pie-charts since those are great when the variable has more categories. It could be considered an outlier and removed, however it may be more interesting and ethical to keep in.
+
+```{r}
+ggplot(data, aes(x = factor(stroke))) +
+  geom_bar(fill = c("blue", "orange")) +
+  labs(title = "Distribution of Stroke", x = "Stroke", y = "Count") +
+  theme_minimal()
+
+# Bar chart for 'residence_type'
+ggplot(data, aes(x = factor(Residence_type))) +
+  geom_bar(fill = c("green", "red")) +
+  labs(title = "Distribution of Residence Type", x = "Residence Type", y = "Count") +
+  theme_minimal()
+
+# Bar chart for 'gender'
+ggplot(data, aes(x = factor(gender))) +
+  geom_bar(fill = c("purple", "yellow", "green")) +
+  labs(title = "Distribution of Gender", x = "Gender", y = "Count") +
+  theme_minimal()
+
+```
+
+We can notice a basically even residence type distribution, and a decently balanced gender one, with more female patients being present in our train set.
+
+The plot of 'stroke' makes apparent what is going to be a big issue for our models, heavily unbalanced target. It was to be expected, the majority (around 95%) of patients didn't experience a stroke. We may need to address this issue in some way later.
+
+```{r}
+tb_train %>% group_by(stroke) %>%
+  summarise(n=n()) %>% mutate(freq=n/sum(n))
+```
+
+```{r}
+stroke_residence_gender_counts <- tb_train %>%
+  group_by(stroke, Residence_type, gender) %>%
+  summarise(count = n()) %>%
+  ungroup()
+
+ggplot(stroke_residence_gender_counts, aes(x = Residence_type, y = count, fill = gender)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~stroke) +
+  labs(title = "Distribution of Stroke by Residence Type and Gender",
+       x = "Residence Type",
+       y = "Count",
+       fill = "Gender") +
+  theme_minimal()
+```
+
+Although the residence type doesn't seem to heavily affect the target, the gender may very well be. The distribution by gender of the negative-target group seem to reflect the actual distribution of the gender, meanwhile men in rural settings may be more subjected to strokes.
+
+## Tasks
+
+### 1) Binary Classification of Strokes
+
+Question: "Is it possible to predict strokes with ML models?"
+
+We can now start our **classification task**, we will try to predict the variable *stroke* by using all of the features, and trying to understand which are the most important ones.
+
+In the healthcare sector, explainability is often as important as actual performance, clients want to know why a decision was made, after all we are dealing with a person body.
+
+Therefore, we'll start with one of the most simple model types, a linear model. In particular we'll perform **logistic regression** using 'tidymodels'.
+
+First we define recipes that will be useful for the whole task, and models workflows.
+
+```{r}
+base_recipe <- recipe(stroke ~ ., data = tb_train)
+
+ stroke_recipe <- base_recipe %>% step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors())
+```
+
+The recipe is very handy because it will normalize the numeric data and perform One-Hot encoding on the categorical variables, without having to do it manually.
+
+We now create our logistic regressor, without any regularization, using the glm engine.
+
+```{r}
+
+logreg <- logistic_reg() %>% set_engine('glm')
+
+logreg_workflow <- workflow() %>% add_model(logreg) %>% add_recipe(stroke_recipe)
+
+```
+
+We can now train the model on our tb_train, we will use all the features in order to predict the variable 'strokes' (specified in the recipe).
+
+```{r}
+logreg_fit_workflow <- logreg_workflow %>% fit(tb_train)
+
+logreg_fit_workflow
+```
+
+```{r}
+logreg_fit_workflow %>% 
+  extract_fit_engine %>% 
+  summary()
+```
+
+From the summary we can obtain a overview of the importance of each feature. The smaller the Pr(\>\|z\|) column (p-value) is, the most significant the feature, basically it allows us to state if a feature is significant or not.
+
+We can see that ***age*** is by a large margin the most significant feature, indeed it has a statistic value of over 8 and since we applied normalization we can also use this column to analyze the importance. We expected this result both from common sense and from our visualizations. *Avg_glucose_level* is the second most relevant feature. High blood glucose levels are indicative of diabetes or pre-diabetes. Diabetes is a well-known risk factor for stroke. Managing glucose levels is crucial in reducing stroke risk. Having experienced a heart disease too, indeed often these two health issues are related.
+
+We also mentioned before that *bmi* was probably not going to be very relevant and it is indeed one of the least significant features; having never worked (work type is in general not very significant, although being self employed has the lowest p-value among them, potentially due to high stress) is the least important feature.
+
+Lastly, although most smoking status groups aren't very important, the main one (currently smoking) is one of the principal features.
+
+We evaluate the model on our validation set by augmenting it with the predictions and their probabilities.
+
+```{r}
+logreg_valPred <- logreg_fit_workflow %>% augment(tb_val)
+logreg_valPred %>% head(1)
+```
+
+Let's evaluate the model, the most used metric for classification is accuracy.
+
+```{r}
+yardstick::metrics(logreg_valPred, truth=stroke, estimate=.pred_class)
+```
+
+An accuracy of 95% is good, but also quite suspicious. Indeed, we mentioned that we were dealing with unbalanced classes. Accuracy is a poor choice in this situations, a model could reach high accuracy by always predicting the negative class.
+
+```{r}
+logreg_valPred %>% group_by(stroke) %>%
+  summarise(n=n()) %>% mutate(freq=n/sum(n))
+```
+
+Our suspicion seems found, the accuracy is the same as the frequency of the negative class. A better way to evaluate a classifier is with a confusion matrix.
+
+```{r}
+logreg_cm <- logreg_valPred %>%
+  conf_mat(truth=stroke,estimate=.pred_class)
+
+logreg_cm
+```
+
+While we obtain a good accuracy, our model is never predicting the positive class.
+
+It's now a good time to talk about the main metric we'll try to optimize in this project, the **recall**. It is defined as **recall = TP / (TP + FN)**, maximizing it means minimizing the false negatives, something key in this use case. A patient being labeled 'safe' having a stroke is a **much worse error** than a safe patient being labeled 'at risk'; in the second case we might lose some time and money, in the first one potentially a life.
+
+```{r}
+yardstick::recall(logreg_valPred, truth=stroke,estimate=.pred_class,event_level='second')
+```
+
+The model never predicts stroke=1, so its recall is 0, which is not acceptable. Since we are maximizing recall, we can find the best threshold for our models using **ROC curves**. These are plots that have the false positive rate (FPR) as x-axis and the true positive rate(TPR or the recall) as y-axis. Each point represents a different threshold for the target separation. To measure how good a model is we can use the area under the ROC curve.
+
+```{r}
+plot_roc_curve <- function(prediction_dataset, target) {
+auroc <- yardstick::roc_auc(prediction_dataset, {{ target }},.pred_1,event_level = 'second')$.estimate
+
+roc_curve(prediction_dataset, {{ target }},.pred_1,event_level = 'second') %>% autoplot() +   geom_label(aes(x = 0.75, y = 0.25, label = paste("AUROC:", round(auroc, 5))), size = 4, label.size = 0.5)
+}
+```
+
+```{r}
+plot_roc_curve(logreg_valPred, 'stroke')
+```
+
+```{r}
+logreg_fit_workflow %>% 
+  extract_fit_engine() %>%  
+  check_model()
+```
+
+We obtain a decent **AUROC**, and we could decide to extract a threshold from the curve, but we'll try more models to see different perspectives.
+
+Next we'll try a more powerful, but also less explainable model, a **Random Forest**. This is done to see if by using a strong model we can significantly improve our score.
+
+```{r}
+rand_forest_spec <- rand_forest(mtry = 3) %>%
+  set_engine('randomForest') %>%
+  set_mode('classification')
+```
+
+```{r}
+
+rf <- rand_forest(mtry = 3) %>%
+  set_engine('randomForest') %>%
+  set_mode('classification')
+
+
+ rf_workflow <- workflow() %>% add_model(rf) %>% add_recipe(stroke_recipe)
+
+
+rf_fit_workflow <- rf_workflow %>% fit(tb_train)
+```
+
+```{r}
+rf_valPred <- rf_fit_workflow %>% augment(tb_val)
+rf_valPred %>% head(1)
+```
+
+```{r}
+rf_cm <- rf_valPred %>%
+  conf_mat(truth=stroke,estimate=.pred_class)
+
+rf_cm
+
+yardstick::recall(rf_valPred, truth=stroke,estimate=.pred_class,event_level='second')
+```
+
+```{r}
+plot_roc_curve(rf_valPred, 'stroke')
+```
+
+We obtain a bad performance here too. If a powerful model can't really learn to distinguish the classes it's a sign that we need to address the imbalance. Our AUROC are also very similar.
+
+Typical techniques to do so include oversampling of the least-common class, SMOTE or our choice, **undersampling** of the most-common class. This means sampling N (or close to it) patients that didn't experience a stroke, where N is the numbers of those who did. Although we lose a lot of information, we are not introducing dummy observations. To perform this we can simply modify our recipe by adding *step_downsample*. Here we could choose the ratio between the undersample class and the least-represented class. We tried many values: ratios higher than 1 would perform quite bad, meaning that the model would have a hard time predicting True even when that class wasn't much smaller than the other. On the other hand, using a ration of 1 or slighly less resulted in the best models.
+
+```{r}
+us_stroke_recipe <- stroke_recipe %>% step_downsample(stroke, under_ratio = 0.7)
+```
+
+```{r}
+logreg <- logistic_reg() %>% set_engine('glm')
+
+us_logreg_workflow <- workflow() %>% add_model(logreg) %>% add_recipe(us_stroke_recipe)
+
+us_logreg_fit_workflow <- us_logreg_workflow %>% fit(tb_train)
+
+us_logreg_fit_workflow
+```
+
+```{r}
+us_logreg_valPred <- us_logreg_fit_workflow %>% augment(tb_val)
+us_logreg_valPred %>% head(1)
+```
+
+```{r}
+us_logreg_cm <- us_logreg_valPred %>%
+  conf_mat(truth=stroke,estimate=.pred_class)
+
+us_logreg_cm
+```
+
+```{r}
+yardstick::recall(us_logreg_valPred, truth=stroke,estimate=.pred_class,event_level='second')
+```
+
+```{r}
+plot_roc_curve(us_logreg_valPred, 'stroke')
+```
+
+We obtain a good recall of over **0.8** and an AUROC comparable to before. The undersampling was definitely needed as this is a way better model than the previous one. However we now have many false positives.
+
+We now try to tune this model with **Cross-Validation** (and Grid Search) to see if we can make it better. We can tune the penalty parameter, effecting converting our model into a **LASSO** regression, this will be done with the glmnet engine. We will try to optimize the ROC AUC. We didn't choose the recall for two reason, Yardstick's recall isn't supported by *tune_grid* and we didn't want to only focus on it, the ROC AUC should give us more balanced results.
+
+```{r}
+lasso_tune <-
+  logistic_reg(penalty = tune(), mixture = 1) %>%
+  set_engine('glmnet')
+
+tb_train_vfold <- vfold_cv(tb_train)
+
+tune_workflow <- workflow() %>%  add_recipe(stroke_recipe) %>%  add_model(lasso_tune)
+```
+
+```{r}
+grid <- grid_regular(penalty(), levels = 100)
+
+tune_results <- tune_workflow %>% 
+  tune_grid(resamples = tb_train_vfold, grid = grid, metrics = metric_set(roc_auc))
+```
+
+```{r}
+best_params <- select_best(tune_results, metric='roc_auc')
+
+autoplot(tune_results)
+```
+
+From the plot we can see that the AUROC doesn't go above the one we currently have, and by applying a lot of regularization it falls down turning a model into a random regressor.
+
+```{r}
+best_params
+```
+
+We have obtained our LASSO best paramaters, now we can put them in the model.
+
+```{r}
+lasso <- logistic_reg(penalty = best_params$penalty, mixture = 1) %>%
+  set_engine('glmnet')
+
+lasso_workflow <- workflow() %>% add_model(lasso) %>% add_recipe(us_stroke_recipe)
+lasso_fit_workflow <- lasso_workflow %>% fit(tb_train)
+```
+
+```{r}
+lasso_valPred <- lasso_fit_workflow %>% augment(tb_val)
+lasso_valPred %>% head(1)
+```
+
+```{r}
+final_logreg_cm <- lasso_valPred %>%
+  conf_mat(truth=stroke,estimate=.pred_class)
+
+final_logreg_cm
+```
+
+```{r}
+yardstick::recall(lasso_valPred, truth=stroke,estimate=.pred_class,event_level='second')
+```
+
+```{r}
+plot_roc_curve(lasso_valPred, 'stroke')
+```
+
+We obtain a virtually equal performance as the logistic model without regularization, this was expected as we have enstablished that regularization wasn't as needed. Since the benefits aren't a lot, and we want a more general model, we will choose the other linear model instead.
+
+Let's now check the performance of the model on the train set.
+
+```{r}
+us_logreg_trainPred <- us_logreg_fit_workflow %>% augment(tb_train)
+
+us_logreg_train_cm <- us_logreg_trainPred %>% conf_mat(truth=stroke,estimate=.pred_class)
+
+us_logreg_train_cm
+```
+
+```{r}
+yardstick::recall(us_logreg_trainPred, truth=stroke,estimate=.pred_class,event_level='second')
+```
+
+We have similar or even worse performance on the train set, our model is not overfitting, one more reason to not regularize it.
+
+Let's now check how the random forest performs with the undersampled data.
+
+```{r}
+us_rf_workflow <- workflow() %>% add_model(rf) %>% add_recipe(us_stroke_recipe)
+
+
+us_rf_fit_workflow <- us_rf_workflow %>% fit(tb_train)
+```
+
+```{r}
+us_rf_valPred <- us_rf_fit_workflow %>% augment(tb_val)
+us_rf_valPred %>% head(1)
+```
+
+```{r}
+us_rf_cm <- us_rf_valPred %>%
+  conf_mat(truth=stroke,estimate=.pred_class)
+
+print(us_rf_cm)
+
+yardstick::recall(us_rf_valPred, truth=stroke,estimate=.pred_class,event_level='second')
+```
+
+```{r}
+plot_roc_curve(us_rf_valPred, 'stroke')
+```
+
+The recall estimates of the random forest models are similar if not worse than the logistic regression ones, and the ROC curve is worse. Therefore, we will choose the first model. Since we care a lot about explainability, we won't consider the random forest unless it shows clear advantages over the competitor, which isn't the case.
+
+Let's visualize all the ROC curves we created at the same time.
+
+```{r}
+plot_multiple_roc_curves <- function(target, ...) {
+  datasets <- list(...)
+  names(datasets) <- as.list(substitute(list(...)))[-1L]
+  roc_data <- map_dfr(datasets, ~roc_curve(.x, {{ target }}, .pred_1, event_level = 'second') %>%
+                        mutate(model = deparse(substitute(.x))), .id = "model")
+  ggplot(roc_data, aes(x = 1 - specificity, y = sensitivity, color = model, group = model)) +
+    geom_line(size = 1) +
+    labs(x = "FPR", y = "TPR") +
+    theme_minimal() +
+    scale_color_discrete(name = "Model") + geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", size = 0.5) +  ggtitle("ROC Curves of Models")
+}
+ 
+plot_multiple_roc_curves(us_logreg_valPred, logreg_valPred, us_rf_valPred, rf_valPred, lasso_valPred, target = 'stroke')
+```
+
+Now that we chose a model, we can evaluate on the test set, which was completely untouched until now.
+
+```{r}
+us_logreg_testPred <- us_logreg_fit_workflow %>% augment(tb_test)
+us_logreg_testPred %>% head(1)
+```
+
+```{r}
+us_logreg_cm_test <- us_logreg_testPred %>%
+  conf_mat(truth=stroke,estimate=.pred_class)
+
+print(us_logreg_cm_test)
+
+yardstick::recall(us_logreg_testPred, truth=stroke,estimate=.pred_class,event_level='second')
+```
+
+We obtain a recall close to **0.8** on the test set. It's a pretty good result considering we are using a very simple and explainable model.
+
+### 2) Groups of risk
+
+Now we move to the second task. We have already decided the approach. We will create some groups based on the **probability of outcome 1** (having a stroke) that our model predicted. This division will be based on the **sigmoid function** which logistic regression is based on. The groups we will create are '**low**', '**medium**' and '**high**'. We are aware that this is not a very realistic approach but without expert knowledge we can't manually create groups. It's also a coherent pipeline with our models, and could thus be abstracted.
+
+We now plot a visualization of the sigmoid function and the groups.
+
+To do so, we will demonstrate the main philosophy of GGPLOT, we create graphs by adding different elements. On top of the standard graph elements, we need:
+
+-   The sigmoid function itself, easily constructed by passing an interval through its analytical expression.
+
+-   The simple X = k divisions.
+
+-   The points, indexed by the prediction of the model (Y) and the respective logits (X).
+
+```{r}
+predicted_probs  <- us_logreg_trainPred$.pred_1
+
+risk_groups <- cut(predicted_probs,
+                   breaks = c(-Inf, 0.1, 0.5, Inf),
+                   labels = c("low", "medium", "high"),
+                   include.lowest = TRUE)
+
+
+sigmoid <- function(x) {
+  return(1 / (1 + exp(-x)))
+}
+
+x_values <- seq(-10, 10, by = 0.1)
+
+sigmoid_dummy <- data.frame(x=x_values, y=sigmoid(x_values))
+
+
+logit <- function(p) {
+  return(log(p / (1 - p)))
+}
+
+us_logreg_trainPred <- us_logreg_trainPred %>% mutate(x_plot=logit(.pred_1))
+us_logreg_trainPred$groups <- risk_groups
+
+
+to_plot <- us_logreg_trainPred %>% sample_n(120)
+
+
+ggplot() +
+  geom_line(data=sigmoid_dummy, aes(x = x, y = y), color = "black", size = 1) +
+  xlab("Logit") +
+  xlim(-10, 10) +
+  ylab("Probability of Stroke=1") +
+  ylim(0, 1) +
+  labs(title = "Groups of Risk")+
+  theme_minimal() +
+
+  geom_vline(xintercept = logit(0.1), linetype = "dashed", color = "blue") +
+  geom_vline(xintercept = logit(0.5), linetype = "dashed", color = "blue") +
+  annotate("text", x = logit(0.025), y = 0.5, label = "low", color = "blue",vjust=-3,) +
+  annotate("text", x = logit(0.3), y = 0.5, label = "medium", color = "blue",vjust=-3, hjust=.6) +
+  annotate("text", x = logit(0.9), y = 0.5, label = "high", color = "blue",vjust=-3,) +
+  
+  geom_point(data = to_plot, aes(x = x_plot, y = .pred_1, color = groups)) +
+  scale_color_manual(values = c("low" = "green", "medium" = "orange", "high" = "red"))
+```
+
+The visualization clearly highlights the main idea of the process we are doing. We are cutting the space at p=0.1 and p=0.5 to create three probability groups. To visualize the points we can use their probability and the respective raw logit (input to the Sigmoid function). We didn't choose more extreme threshold because most points are concentrated in the shown zone, rarely reaching the endpoints of the function.
+
+```{r}
+tb_train_groups <- tb_train %>% select(-stroke)
+
+tb_train_groups$groups <- risk_groups
+tb_train_groups %>% head(5)
+```
+
+```{r}
+tb_train_groups %>% count(groups)
+```
+
+The groups seem quite balanced, it also makes sense that the medium group would have the most points as our classifier didn't have extremely high performance and confidence.
+
+We will now build three LASSO models in order to predict in a binary way the groups. From these models we can then extract the importance of the features used to predict each group.
+
+```{r}
+fit_specific_model <- function(group, tibble, model) {
+  tb <- tibble %>% mutate(group=ifelse(groups == {{ group }},1,0))
+  tb$group <- as.factor(tb$group)
+  tb <- tb %>% select(-groups)
+  
+  recipe <- recipe(group   ~ ., data = tb) %>% step_normalize(all_numeric_predictors()) %>% step_dummy(all_nominal_predictors())
+  
+ workflow <- workflow() %>% add_model(model) %>% add_recipe(recipe)
+ fit_workflow <- workflow %>% fit(tb)
+
+ return(fit_workflow)
+}
+```
+
+```{r}
+fit_specific_lasso <- function(group, tibble) {
+  tb <- tibble %>% mutate(group=ifelse(groups == {{ group }},1,0))
+  tb$group <- as.factor(tb$group)
+  tb <- tb %>% select(-groups)
+  
+  lasso_tune <-
+  logistic_reg(penalty = tune(), mixture = 1) %>%
+  set_engine('glmnet')
+  
+  tb_vfold <- vfold_cv(tb)
+  
+  recipe <- recipe(group   ~ ., data = tb) %>% step_normalize(all_numeric_predictors()) %>% step_dummy(all_nominal_predictors())
+  
+  tune_workflow <- workflow() %>%  add_recipe(recipe) %>%  add_model(lasso_tune)
+  
+  grid <- grid_regular(penalty(), levels = 100)
+
+tune_results <- tune_workflow %>% 
+  tune_grid(resamples = tb_vfold, grid = grid, metrics = metric_set(roc_auc))
+
+best_params <- select_best(tune_results, metric='roc_auc')
+
+return(best_params)
+}
+```
+
+```{r}
+best_params_low <- fit_specific_lasso('low', tb_train_groups)
+
+
+lasso_low <- logistic_reg(penalty = best_params_low$penalty, mixture = 1) %>%
+  set_engine('glmnet')
+
+low_fit_worflow <- fit_specific_model('low', tb_train_groups, lasso_low) %>% extract_fit_engine()
+
+coef(low_fit_worflow, s=best_params_low$penalty) %>% as.matrix() 
+```
+
+To predict the 'low' group age is still the most important feature by far, however the smoking status being unknown is also quite high.
+
+```{r}
+best_params_medium <- fit_specific_lasso('medium', tb_train_groups)
+
+
+lasso_medium <- logistic_reg(penalty = best_params_medium$penalty, mixture = 1) %>%
+  set_engine('glmnet')
+
+medium_fit_worflow <- fit_specific_model('medium', tb_train_groups, lasso_medium) %>% extract_fit_engine()
+
+coef(medium_fit_worflow, s=best_params_medium$penalty) %>% as.matrix() 
+```
+
+The model seems to not consider many features as much as the others. Let's use a normal logistic regression for this group.
+
+```{r}
+medium_test_fit_worflow <- fit_specific_model('medium', tb_train_groups, logreg)
+
+medium_test_fit_worflow %>% extract_fit_engine() %>% summary()
+```
+
+Indeed, this result is a lot more informative. Now while age is still very high, hypertension, the glucose level and the marriage status are similarly important. BMI is also finally quite important.The work types are confirmed to not be very informative.
+
+```{r}
+best_params_high <- fit_specific_lasso('high', tb_train_groups)
+
+
+lasso_high <- logistic_reg(penalty = best_params_high$penalty, mixture = 1) %>%
+  set_engine('glmnet')
+
+high_fit_worflow <- fit_specific_model('high', tb_train_groups, lasso_high) %>% extract_fit_engine()
+
+coef(high_fit_worflow, s=best_params_high$penalty) %>% as.matrix() 
+```
+
+Here we get similar results to the 'low' group.
+
+In general we can see that the smoking status is a lot more relevant when predicting either low or high, the peaks. We think this makes sense as smoking is something that directly hurts a person's health, thus doing it or not may affect more the 'extreme cases', and be less important for the neutral cases.
+
+We don't believe these results are very informative and a different approach may be a better idea. It may be a better idea to use techniques such as LIME to explain why a specific patient was classified in a certain way. The lackluster results may be also due to the split of the groups, which we already discussed.
+
+### 3) Regression on Age
+
+During our previous analysis we found out that *age* is the most important feature to predict 'stroke'. Not only that, we found that it was by far the most significant one.
+
+A reason for this could be that some of the other features don't add much information once we already have the age. A way to check this is by looking at the correlation between the features, if they bring very different information they shouldn't be **highly-correlated**. After these consideration we build a regression model to predict age given the other features.
+
+```{r}
+tb_train_no_stroke <- select(tb_train, -stroke)
+tb_val_no_stroke <- select(tb_val, -stroke)
+
+
+age_recipe_base <- recipe(age ~ ., data = tb_train_no_stroke)
+
+
+ age_recipe <- age_recipe_base %>% step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors())
+
+ 
+linreg <-  linear_reg() %>% set_engine("lm")
+  
+linreg_workflow <- workflow() %>% add_model(linreg) %>% add_recipe(age_recipe)
+ 
+linreg_fit_workflow <- linreg_workflow %>% fit(tb_train_no_stroke)
+```
+
+```{r}
+linreg_fit_workflow %>% extract_fit_engine() %>% summary()
+```
+
+We notice something that we were expecting, almost all of the other features have a high correlation with the age. Some of these are intuitive, in particular those related to the health of a patient such as hypertension, heart_disease, avg_glucose_level; others are harder to explain but since they refer to experiences (marriages, smoking history, jobs...) they could explain something about the age, an older patient is more likely to have been part of a marriage than a younger one.
+
+Although this was the main goal we had, we can still try to evaluate the regressor to determine how much of age is explained by the features.
+
+```{r}
+linreg_trainPred <- linreg_fit_workflow %>% augment(tb_train_no_stroke)
+
+bind_rows(yardstick::rsq(linreg_trainPred, truth=age,estimate=.pred), yardstick::rmse(linreg_trainPred, truth=age,estimate=.pred))
+```
+
+```{r}
+linreg_valPred <- linreg_fit_workflow %>% augment(tb_val_no_stroke)
+
+bind_rows(yardstick::rsq(linreg_valPred, truth=age,estimate=.pred), yardstick::rmse(linreg_valPred, truth=age,estimate=.pred))
+```
+
+We can see that the R\^2 of the model is pretty consistent both on the train and validation set, around **0.65**, meaning that the features explain 65% of the age variable. This confirms our ideas: while of course the features alone aren't able to perfectly predict the age, there is definitely collinearity among them.
+
+To consider this a valid analysis we first need to be sure that that we are using a valid model.
+
+```{r}
+linreg_fit_workflow %>% 
+  extract_fit_engine() %>%  
+  check_model()
+```
+
+The linear regression model fits all requirements for being a valid model, except the normality of the residuals. Possible reasons for this include non-linearity of the data (indeed the model is not able to obtain a very high R squared), or the presence (deliberately left in) of outliers. However, the scope of this process wasn't creating a model able to well-predict age for a real application, but moreso to measure the collinearity between the features.
+
+```{r}
+train_withResid <- linreg_fit_workflow %>%
+  extract_fit_engine() %>%
+  augment()
+
+train_withResid %>% 
+  ggplot()+ 
+  geom_point(aes(
+    x=bmi,
+    y=.resid))
+```
+
+```{r}
+train_withResid %>% 
+  ggplot()+ 
+  geom_point(aes(
+    x=avg_glucose_level,
+    y=.resid))
+```
+
+The residuals and the numeric variables also don't have any noticeable correlation.
+
+### 4) Hypothesis testing on mean BMI between target classes
+
+While we are sure there is a significant difference between the mean age of people who had a stroke and people who hadn't, the other numeric features are more interesting. We were expecting the BMI to be a lot more important to predict strokes, and the institute was too, considering the last task they assigned us. So we will now check if there's a difference in BMI between the target groups.
+
+We can check if two means are significantly different with hypothesis testing.
+
+-   μS : mean bmi of people who had a stroke.
+
+-   μNS : mean bmi of people who didn't have a stroke.
+
+-   Null Hypothesis H0 : μS = μNS
+
+-    Alternative Hypothesis H1 : μS != μNS
+
+First we need to check the data's normality to decide between a t-test or a Wilcoxon Signed-Rank test. We do so by simulating a Gaussian distribution using the parameters of our data and comparing it with the real distribution.
+
+```{r}
+mean_bmi <- data %>% 
+  summarize(mean(bmi)) %>% pull(); 
+sd_bmi <- data %>% 
+  summarize(sd(bmi)) %>% pull()
+
+
+simulatedGauss <- 
+  tibble(bmi=rnorm(n = 1000,
+                        mean=mean_bmi,
+                        sd = sd_bmi))
+
+combined_bmi <- bind_rows(data %>% select(bmi) %>% mutate(source='real'), simulatedGauss %>% mutate(source='simulation'))
+
+
+ggplot(combined_bmi, aes(x = bmi, color = source)) +
+  geom_density() +
+  labs(title = "distribution of real BMI  and simulated gaussian",
+       x = "BMI",
+       y = "Density") +
+  theme_minimal()
+```
+
+The plot is useful to check the normality of our data.The two curves are similar, thus we can say that BMI is approximately normally distributed and we can do a t-test. Of course they aren't fully overlapping, but they are very close.
+
+```{r}
+bmi_stroke <- data %>% filter(stroke==1) %>% select(bmi)
+
+bmi_safe <- data %>% filter(stroke==0) %>% select(bmi)
+
+print(glue("Mean BMI of people who didn't have a stroke: {mean(bmi_stroke$bmi)}"))
+
+print(glue("Mean BMI of people who had a stroke: {mean(bmi_safe$bmi)}"))
+```
+
+```{r}
+t.test(bmi_stroke$bmi, bmi_safe$bmi)
+```
+
+The p-value is smaller than 0.05 (significance), meaning that we can reject H0 with 95% confidence and state that the difference between two means is statistically significant, even if the means themselves seem relatively close. The estimated difference range from 0.309 to 2.657.
+
+To confirm this result we can use a different approach, here we'll use a permutation test.
+
+```{r}
+null_hypothesis <- data %>%  specify(response = bmi, explanatory = stroke) %>%  hypothesize(null = "independence")
+
+null_distribution <- null_hypothesis %>%  generate(reps = 1000, type = "permute") %>%  calculate(stat = "diff in means", order = c(0, 1))
+
+```
+
+```{r}
+observed_stat <- data %>%  specify(response = bmi, explanatory = stroke) %>%  calculate(stat = "diff in means", order = c(0, 1))
+
+null_distribution %>%  visualize() +  shade_p_value(obs_stat = observed_stat, direction = "two-sided")
+
+p_value <- null_distribution %>%  get_p_value(obs_stat = observed_stat, direction = "two-sided")
+
+p_value
+```
+
+We again obtain a p-value way smaller than the significance, we can say with high confidence that the mean BMI between people who had and didn't have a stroke is different.
+
+Now that we confirmed that the people who had strokes have in general a lower BMI (although not by much), we can proceed with the analysis of the life-styles. If we accepted the null hypothesis it wouldn't have made sense to proceed.
+
+### 5) ANOVA: BMI between work types and residence types
+
+Our goal now is to check where a significant difference in the BMI between various work type.
+
+```{r}
+data %>%  group_by(work_type) %>% summarise(mean=mean(avg_glucose_level), sd=sd(avg_glucose_level),n=n())
+```
+
+```{r}
+data %>% ggplot()+geom_boxplot(aes(x=work_type, y=bmi))
+```
+
+```{r}
+ggplot(data, aes(x = work_type, y = bmi, fill = work_type)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.1, fill = "white") + 
+  labs(title = "Distribution of BMI for various work_types",
+       x = "Work type",
+       y = "BMI") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+The plots show that three classes (Govt_job, Private and Self-employed) seem to have very similar distributions, with very similar means and standard deviations.
+
+Children have generally a lower and more concentrated BMI, while government, private sector, and self-employed workers show greater variability and a higher average BMI. The "Never worked" category has a distribution similar to children but slightly higher.
+
+To obtain an actual statistical answer to the question we'll utilize **ANOVA**. In simple words, we'll compare the mean of all of these groups and test the hypothesis:
+
+-   H0 : all means are equal.
+
+-    H1 : at least one mean is different.
+
+```{r}
+observed_f_statistic <- data %>%  specify(bmi~work_type) %>%  hypothesize(null = "independence") %>%  calculate(stat = "F")
+
+null_dist <- data %>%  specify(bmi~work_type) %>%  hypothesize(null = "independence") %>%  generate(reps = 1000, type = "permute") %>%  calculate(stat = "F")
+```
+
+```{r}
+null_dist %>%  visualize() +   shade_p_value(observed_f_statistic, direction = "greater", fill='green')
+```
+
+```{r, warning=FALSE}
+null_dist %>%  get_p_value(obs_stat = observed_f_statistic, direction = "greater")
+```
+
+We can reject H0 with extremely high confidence, indeed the p-value is approximated at 0, meaning it's basically guaranteed that at least one group is different from the others. Now we can try to find the different group(s) and repeat the test. After seeing the means and variances of the categories, the first suspect is the children group, it's the one with the smallest statistics and is really close only to the Never-worked category. Logically these two seem related, the latter could potentially be formed by young individuals who can't be considered children anymore but also have never worked.
+
+```{r}
+data_no_children <- data %>% filter(work_type != "children")
+
+observed_f_statistic <- data_no_children %>%  specify(bmi~work_type) %>%  hypothesize(null = "independence") %>%  calculate(stat = "F")
+null_dist <- data_no_children %>%  specify(bmi~work_type) %>%  hypothesize(null = "independence") %>%  generate(reps = 1000, type = "permute") %>%  calculate(stat = "F")
+
+null_dist %>%  visualize() +   shade_p_value(observed_f_statistic, direction = "greater")
+```
+
+```{r}
+null_dist %>%  get_p_value(obs_stat = observed_f_statistic, direction = "greater")
+```
+
+Indeed now the p-value has become bigger than before. The children category is the one significantly different from the others, it intuitively makes sense, children have often lower BMI values due to several reasons like higher metabolic rate (they burn more calories) and higher growth rate (muscles and bone density rapidly increase, possibly more than weight), and hormones effects.
+
+However our statistics lies again in the rejection region; so we the repeat the experiment one more time, now also removing the Never_worked category.
+
+```{r}
+data_adults <- data %>% filter(work_type != "Never_worked" & work_type != "children")
+```
+
+```{r}
+observed_f_statistic <- data_adults %>%  specify(bmi~work_type) %>%  hypothesize(null = "independence") %>%  calculate(stat = "F")
+null_dist <- data_adults %>%  specify(bmi~work_type) %>%  hypothesize(null = "independence") %>%  generate(reps = 1000, type = "permute") %>%  calculate(stat = "F")
+```
+
+```{r}
+null_dist %>%  visualize() +   shade_p_value(observed_f_statistic, direction = "greater")
+```
+
+```{r}
+null_dist %>%  get_p_value(obs_stat = observed_f_statistic, direction = "greater")
+```
+
+Now the p-value is very big, far away from the rejection region. The results make sense with what we noticed when we only saw the means and variances of the groups, the two groups we removed were similar between them but quite different from the others.
+
+These results could also be interpreted as two different clusters representing young people/children and working adults.
+
+Next we'll do the same on the combinations between work_type and residence_type. We decided to skip the analysis based on residence_type only, as its cardinality is only 2, it can be easily handled together with the already considered group.
+
+```{r}
+data %>%
+  group_by(work_type, Residence_type) %>%
+  summarise(mean = mean(bmi), sd = sd(bmi), n = n())
+```
+
+```{r}
+data %>%
+  ggplot() +
+  geom_boxplot(aes(x = interaction(work_type, Residence_type), y = bmi)) +
+  labs(x = "Work Type and Residence Type", y = "BMI") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+data_wr_united <- data %>% unite(work_and_residence, work_type, Residence_type, sep='/')
+
+
+observed_f_statistic <- data_wr_united %>%  specify(bmi~work_and_residence) %>%  hypothesize(null = "independence") %>%  calculate(stat = "F")
+
+null_dist <- data_wr_united %>%  specify(bmi~work_and_residence) %>%  hypothesize(null = "independence") %>%  generate(reps = 1000, type = "permute") %>%  calculate(stat = "F")
+
+null_dist %>%  visualize() +   shade_p_value(observed_f_statistic, direction = "greater")
+```
+
+We search for the groups with the most difference. From the box-plots we can identify some possible candidates, which are of course the combinations involving children and never_worked, although the distributions of the two never_worked groups seem quite different between each other. Let's start by removing the children.
+
+```{r}
+data_wr_filtered <- data_wr_united %>% filter(work_and_residence != "children/Rural" & work_and_residence != "children/Urban")
+```
+
+```{r}
+observed_f_statistic <- data_wr_filtered %>%  specify(bmi~work_and_residence) %>%  hypothesize(null = "independence") %>%  calculate(stat = "F")
+null_dist <- data_wr_filtered %>%  specify(bmi~work_and_residence) %>%  hypothesize(null = "independence") %>%  generate(reps = 1000, type = "permute") %>%  calculate(stat = "F")
+
+
+null_dist %>%  visualize() +   shade_p_value(observed_f_statistic, direction = "greater")
+
+
+null_dist %>%  get_p_value(obs_stat = observed_f_statistic, direction = "greater")
+```
+
+We already get a high p-value. This is a quite interesting result. Before we needed to remove both children and never_worked to obtain statistically close distributions, however here only the former were needed. We were expecting to obtain a low p-value by removing children and at least half of never_worked, however the children were enough. This is an example of interactions between features revealing information, considering both work status and residence type together might reveal patterns that weren't obvious when looking at work status alone. When we control for residence type by considering it in combination with work type, the influence of the residence type is accounted for, allowing the differences between work types to become more apparent. Thus we can further separate the 'previously found' cluster in two, children and young adults.
+
+## Conclusions
+
+From the analysis of the data provided by *Health&co*, it emerged that the main risk factors associated with the advent of brain strokes are advanced age, hypertension, heart disease. Smoking and BMI values are relevant for different (more extreme) probabilities. By using simple linear models such as logistic regression, we were able to predict the probability of a patient experiencing a stroke with good recall. Clearly, if we wanted better performances we could eventually experiments with other types of models, feature selection or new types of data.
+
+Furthermore, the comparative analysis between stroke patients and those who have not experienced any, revealed significant differences in characteristics. This allows us to suggest personalized intervention strategies and increase patient awareness of behaviors and health conditions that can increase the risk of stroke. Good ideas for the future include: focusing on the identified risk factors, adopting predictive models for early risk assessment, and educating patients on healthy lifestyles. These interventions can significantly contribute to reducing the likelihood of strokes and improving the quality of life for patients.
